@@ -3,11 +3,55 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-26 15:23]
+#     Last Modified       :     [2016-08-26 16:15]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
-# Originally derived from:
+#
+# Derived with gratitude from Vajutza's original work at:
 #   https://community.ubnt.com/t5/EdgeMAX/Emerging-Threats-Blacklist/m-p/676515#M20648
+#
+# This script creates a (CIDR aggregated) blacklist suitable for loading into
+# a router's prefix filter (in the author's case, a Ubiquiti EdgeMAX ER-L).
+#
+# The blacklist is derived from one or more source-lists, which are configured at
+# the beginning of the script.  The resulting list will be deduplicated and
+# aggregated.
+#
+# The source list(s) may contain either route prefixes, non-prefixed host IPs, or
+# prefixed host IPs (e.g. 192.168.1.1/32).  All entries in the resulting
+# blacklist will be prefixed.
+#
+# An optional whitelist can also be configured, in which case any contained
+# prefixes will be removed from the final blacklist.  Note that all entries in
+# the supplied whitelist should be prefixed.
+#
+# The general processing flow is contained in the main() function near the end
+# of this script.  Most of the rest of the script is comprised of supporting
+# functions.
+#
+# The only tool this script relies upon is 'aggregate', which performs CIDR
+# prefix optimizations.  It is available on most *nix-like platforms (including
+# EdgeMAX).  For more info see: https://www.mankier.com/1/aggregate
+#
+# The resulting blacklist is outputted to STDOUT. Progress is reported to STDERR.
+#
+# USAGE EXAMPLES
+#
+#    gen_blacklist.sh
+#		( Displays progress and resulting blacklist )
+#
+#    gen_blacklist.sh >blacklist.txt
+#		( Displays progress and saves blacklist to 'blacklist.txt' )
+#
+#    gen_blacklist.sh 2>/dev/null
+#		( Suppresses progress and displays resulting blacklist )
+#
+#    gen_blacklist.sh 2>/dev/null >blacklist.txt
+# 		( Suppresses progress and saves blacklist to 'blacklist.txt' )
+#
+#    gen_blacklist.sh 2>/dev/null | tee blacklist.txt
+# 		( Suppresses progress, displays blacklist, and also saves it to 'blacklist.txt' )
+#
 #################################################################################
 
 
@@ -15,7 +59,7 @@
 # Start of configuration section												#
 #################################################################################
 
-### Blacklist sources (READONLY) - comment out any that are undesired.
+### Blacklist sources (READONLY) - add, remove and/or comment-out as desired
 ###
 declare -a BLACKLISTSOURCES
 	BLACKLISTSOURCES+=('http://pgl.yoyo.org/as/iplist.php')
@@ -29,6 +73,7 @@ declare -r BLACKLISTSOURCES
 
 ### Filename of Whitelist containing IPs and/or range(s) to be removed from the
 ### blacklist.  Leave empty if not needed.
+#readonly WHITELISTFILENAME=""
 readonly WHITELISTFILENAME="whitelist.lst"
 
 #################################################################################
@@ -50,7 +95,6 @@ readonly ARGS="$@"
 
 ### Global Variables (WRITABLE)
 WORKINGDIR="WORKINGDIR"
-
 
 ### Result / Error Codes (READONLY)
 ###
@@ -321,6 +365,10 @@ main()
 	local CONCATENATED_LIST_NAME="01_concatenated_blacklist.txt"
 	local BLACKLIST_FILENAME="blacklist.txt"
 
+	### If a valid, readable whitelist was provided then derive the full
+	### pathname to it so it can be referenced later in the script after
+	### the current-working-directory has been changed.
+	#
 	if [[ -r ${WHITELISTFILENAME} ]]
 	then
 		WHITELISTFILE=$(readlink -m ${WHITELISTFILENAME})
