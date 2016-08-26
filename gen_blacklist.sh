@@ -3,7 +3,7 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-25 21:51]
+#     Last Modified       :     [2016-08-26 15:23]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
 # Originally derived from:
@@ -26,6 +26,10 @@ declare -a BLACKLISTSOURCES
 	BLACKLISTSOURCES+=('http://www.myip.ms/files/blacklist/general/latest_blacklist.txt')
 	BLACKLISTSOURCES+=('http://lists.blocklist.de/lists/all.txt')
 declare -r BLACKLISTSOURCES
+
+### Filename of Whitelist containing IPs and/or range(s) to be removed from the
+### blacklist.  Leave empty if not needed.
+readonly WHITELISTFILENAME="whitelist.lst"
 
 #################################################################################
 # End of configuration section - DO NOT EDIT ANYTHING BELOW
@@ -121,15 +125,18 @@ UpdateBlacklists()
 {
 	local TARGETDIR=$1
 
-	### Pull updated blacklists from their respective sources
+	### Pull updated blacklists from their respective sources.  Done in a
+	### subshell so as to automatically 'cd' back to the original directory
+	### afterward.
 	#
-	cd ${TARGETDIR}
-	for BLACKLIST in "${BLACKLISTSOURCES[@]}"
-	do
-		>&2 echo "Getting updated list: ${BLACKLIST}"
-		curl -# -O ${BLACKLIST}
-	done
-	cd - 1>/dev/null
+	(
+		cd ${TARGETDIR}
+		for BLACKLIST in "${BLACKLISTSOURCES[@]}"
+		do
+			>&2 echo "Getting updated list: ${BLACKLIST}"
+			curl -# -O ${BLACKLIST}
+		done
+	)
 }
 
 
@@ -140,6 +147,7 @@ UpdateBlacklists()
 ###
 ### Args:	$1 = Name of supplied blacklist to be cleaned up.
 ###			$2 = File to save the cleaned-up blacklist as (will be overwritten)
+###			$3 = (optional) file containing whitelist to remove from the blacklist
 ###
 ### Ret:	none
 ###
@@ -147,6 +155,7 @@ CleanupBlacklist()
 {
 	local ORIGLIST=$1
 	local CLEANLIST=$2
+	local WHITELIST=${3:-none}
 	local STRIPPEDLIST="02_stripped.txt"
 	local DEDUPEDLIST="03_deduplicated.txt"
 	local WHITEADDEDLIST="04_whitelistadded.txt"
@@ -157,19 +166,22 @@ CleanupBlacklist()
 
 	### Strip out everything except for the IPv4 addresses
 	#
-	sed -e '/^#/ d' \
-		-e '/[:\::]/ d' \
-		-e 's/ .*// g' \
-		-e 's/[^0-9,.,/]*// g' \
-		-e '/^$/ d' < ${ORIGLIST} >${STRIPPEDLIST}
+	sed							\
+		-e '/^#/ d'				\
+		-e '/[:\::]/ d'			\
+		-e 's/ .*// g'			\
+		-e 's/[^0-9,.,/]*// g'	\
+		-e '/^$/ d'				\
+		-e '/\//!s/$/\/32/ g'	\
+		< ${ORIGLIST} >${STRIPPEDLIST}
 
 	### Count the number of stripped (but not unique or aggregated) ranges
 	#
 	>&2 echo "Count (STRIPPED, non-unique, non-aggregated): $(sed -n '$=' ${STRIPPEDLIST})"
 
-	### Remove any duplicates
+	### Sort, and remove any duplicates
 	#
-	sort ${STRIPPEDLIST} | uniq -u >${DEDUPEDLIST}
+	sort -u ${STRIPPEDLIST} >${DEDUPEDLIST}
 
 	### Count the number of stripped, deduplicated (but not aggregated) ranges
 	#
@@ -177,8 +189,14 @@ CleanupBlacklist()
 
 	### Remove any whitelisted ip's from LocalWhitelist.txt
 	#
-#	comm -23 <(sort PreBlacklist.txt) <(sort LocalWhitelist.txt) > BLACKLIST.txt
-	cp ${DEDUPEDLIST} ${WHITEADDEDLIST}
+	if [[ -r ${WHITELIST} ]]
+	then
+		>&2 echo "Removing whitelisted IPs/Ranges in ${WHITELIST}"
+		comm -23 ${DEDUPEDLIST} <(sort -u ${WHITELIST}) >${WHITEADDEDLIST}
+	else
+		>&2 echo "No whitelist specified/found - skipping"
+		cp ${DEDUPEDLIST} ${WHITEADDEDLIST}
+	fi
 
 	### Count the number of stripped, deduplicated (but not aggregated) ranges including whitelists
 	#
@@ -186,7 +204,7 @@ CleanupBlacklist()
 
 	### Optimize the list into as few prefixes as possible
 	#
-	aggregate -m 32 -o 32 -p 32 -q <${WHITEADDEDLIST} >${CLEANLIST}
+	aggregate -m 32 -o 32 -q <${WHITEADDEDLIST} >${CLEANLIST}
 
 	### Count the number of stripped, deduplicated (but not aggregated) ranges including whitelists
 	#
@@ -303,11 +321,18 @@ main()
 	local CONCATENATED_LIST_NAME="01_concatenated_blacklist.txt"
 	local BLACKLIST_FILENAME="blacklist.txt"
 
+	if [[ -r ${WHITELISTFILENAME} ]]
+	then
+		WHITELISTFILE=$(readlink -m ${WHITELISTFILENAME})
+	else
+		WHITELISTFILE=""
+	fi
+
 	### Create a temporary working-directory.  Change to the temporary working
 	### directory.
 	#
 	WORKINGDIR="WORKINGDIR" # Initialize var to hold upvar'ed results
-	GetTmpDir $WORKINGDIR
+	GetTmpDir ${WORKINGDIR}
 	cd ${WORKINGDIR}
 
 	### Create a place to save updated blacklists to, and pull them from their
@@ -318,25 +343,21 @@ main()
 	UpdateBlacklists "${NEWLISTDIR}"
 
 	### Concatenate all newly-pulled blacklists together into a single file
-	###
+	#
 	cat ${NEWLISTDIR}/* >${CONCATENATED_LIST_NAME}
 
-	### Clean up the new list (e.g. strip out all non-IPv4, dupes, etc.
-	###
-	CleanupBlacklist ${CONCATENATED_LIST_NAME} ${BLACKLIST_FILENAME}
+	### Clean up the new list (e.g. strip out all non-IPv4, dupes, etc.)
+	#
+	CleanupBlacklist ${CONCATENATED_LIST_NAME} ${BLACKLIST_FILENAME} ${WHITELISTFILE}
 
+	### Output the finalized blacklist to STDOUT
+	#
 	cat ${BLACKLIST_FILENAME}
 }
+
 
 
 trap CleanupBeforeExit EXIT
 main
 exit 0
 
-
-
-
-
-
-#Remove any whitelisted ip's from LocalWhitelist.txt
-comm -23 <(sort PreBlacklist.txt) <(sort LocalWhitelist.txt) > BLACKLIST.txt
