@@ -3,7 +3,7 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-26 22:08]
+#     Last Modified       :     [2016-08-27 10:31]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
 #
@@ -127,7 +127,7 @@ declare -r ERRCD            # Once array is constructed, lock it down readonly
 GetTmpDir()
 {
 	### Create a new writable temporary-directory
-	TMPDIRNAME=$(mktemp --directory "/tmp/$PROGNAME.tmpdir.XXXXXXXX")
+	TMPDIRNAME=$(mktemp -d "/tmp/$PROGNAME.tmpdir.XXXXXXXX")
 
 	### Create a flagfile indicating this is a tmpdir and can safely
 	### be cleaned up pre-exit.
