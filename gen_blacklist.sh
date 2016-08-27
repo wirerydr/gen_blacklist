@@ -3,7 +3,7 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-26 16:15]
+#     Last Modified       :     [2016-08-26 21:35]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
 #
@@ -14,8 +14,8 @@
 # a router's prefix filter (in the author's case, a Ubiquiti EdgeMAX ER-L).
 #
 # The blacklist is derived from one or more source-lists, which are configured at
-# the beginning of the script.  The resulting list will be deduplicated and
-# aggregated.
+# the beginning of the script.  Source lists can be online or local.  The
+# resulting list will be deduplicated and aggregated.
 #
 # The source list(s) may contain either route prefixes, non-prefixed host IPs, or
 # prefixed host IPs (e.g. 192.168.1.1/32).  All entries in the resulting
@@ -61,7 +61,14 @@
 
 ### Blacklist sources (READONLY) - add, remove and/or comment-out as desired
 ###
+### Forms:  BLACKLISTSOURCES+=('http://somelist.example.com/list.txt')
+###				(URL - downloads from internet)
+###
+###		or	BLACKLISTSOURCES+=('local_filename.txt')
+###				(local file - read in locally)
+###
 declare -a BLACKLISTSOURCES
+#	BLACKLISTSOURCES+=('local_blacklist.txt')
 	BLACKLISTSOURCES+=('http://pgl.yoyo.org/as/iplist.php')
 	BLACKLISTSOURCES+=('http://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt')
 	BLACKLISTSOURCES+=('http://www.spamhaus.org/drop/drop.txt')
@@ -177,8 +184,21 @@ UpdateBlacklists()
 		cd ${TARGETDIR}
 		for BLACKLIST in "${BLACKLISTSOURCES[@]}"
 		do
-			>&2 echo "Getting updated list: ${BLACKLIST}"
-			curl -# -O ${BLACKLIST}
+			if [[ ${BLACKLIST} =~ ^http:\/\/ ]]
+			then
+				>&2 echo "Pulling online list: ${BLACKLIST}"
+				curl -# -O ${BLACKLIST}
+			else
+				### If a relative filename, then prepend the original working-dir
+				###
+				if [[ ! ${BLACKLIST} =~ ^\/ ]]
+				then
+					BLACKLIST="${ORIGDIR}/${BLACKLIST}"
+				fi
+				>&2 echo "Adding local list: ${BLACKLIST}"
+				cp ${BLACKLIST} ./
+				>&2 echo "######################################################################## 100.0%"
+			fi
 		done
 	)
 }
