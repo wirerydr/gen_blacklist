@@ -3,7 +3,7 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-26 21:35]
+#     Last Modified       :     [2016-08-26 22:08]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
 #
@@ -80,8 +80,8 @@ declare -r BLACKLISTSOURCES
 
 ### Filename of Whitelist containing IPs and/or range(s) to be removed from the
 ### blacklist.  Leave empty if not needed.
-#readonly WHITELISTFILENAME=""
-readonly WHITELISTFILENAME="whitelist.lst"
+readonly WHITELISTFILENAME=""
+#readonly WHITELISTFILENAME="whitelist.lst"
 
 #################################################################################
 # End of configuration section - DO NOT EDIT ANYTHING BELOW
