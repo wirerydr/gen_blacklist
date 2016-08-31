@@ -3,7 +3,7 @@
 #     File Name           :     gen_blacklist.sh
 #     Created By          :     wirerydr
 #     Creation Date       :     [2016-08-25 14:24]
-#     Last Modified       :     [2016-08-27 10:31]
+#     Last Modified       :     [2016-08-30 21:18]
 #     Description         :     Creates a blacklist from various sources
 #################################################################################
 #
@@ -18,8 +18,8 @@
 # resulting list will be deduplicated and aggregated.
 #
 # The source list(s) may contain either route prefixes, non-prefixed host IPs, or
-# prefixed host IPs (e.g. 192.168.1.1/32).  All entries in the resulting
-# blacklist will be prefixed.
+# prefixed host IPs (e.g. 192.168.1.1/32). The resulting blacklist will contain
+# routing prefixes and unprefixed host IPs.
 #
 # An optional whitelist can also be configured, in which case any contained
 # prefixes will be removed from the final blacklist.  Note that all entries in
@@ -68,20 +68,19 @@
 ###				(local file - read in locally)
 ###
 declare -a BLACKLISTSOURCES
-#	BLACKLISTSOURCES+=('local_blacklist.txt')
+	BLACKLISTSOURCES+=('local_blacklist.txt')
+	BLACKLISTSOURCES+=('http://lists.blocklist.de/lists/all.txt')
 	BLACKLISTSOURCES+=('http://pgl.yoyo.org/as/iplist.php')
 	BLACKLISTSOURCES+=('http://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt')
+	BLACKLISTSOURCES+=('http://www.myip.ms/files/blacklist/general/latest_blacklist.txt')
+	BLACKLISTSOURCES+=('http://www.okean.com/sinokoreacidr.txt')
 	BLACKLISTSOURCES+=('http://www.spamhaus.org/drop/drop.txt')
 	BLACKLISTSOURCES+=('http://www.spamhaus.org/drop/edrop.txt')
-	BLACKLISTSOURCES+=('http://www.okean.com/sinokoreacidr.txt')
-	BLACKLISTSOURCES+=('http://www.myip.ms/files/blacklist/general/latest_blacklist.txt')
-	BLACKLISTSOURCES+=('http://lists.blocklist.de/lists/all.txt')
 declare -r BLACKLISTSOURCES
 
 ### Filename of Whitelist containing IPs and/or range(s) to be removed from the
 ### blacklist.  Leave empty if not needed.
-readonly WHITELISTFILENAME=""
-#readonly WHITELISTFILENAME="whitelist.lst"
+readonly WHITELISTFILENAME="local_whitelist.txt"
 
 #################################################################################
 # End of configuration section - DO NOT EDIT ANYTHING BELOW
@@ -108,9 +107,146 @@ WORKINGDIR="WORKINGDIR"
 declare -A ERRCD            # Declare the array and populate it
     ERRCD+=([OK]=0)             # Successful / no error.
     ERRCD+=([BADARG]=98)        # Bad argument / parameter.
+	ERRCD+=([MISSING]=97)		# File / directory missing.
+	ERRCD+=([NOTREADABLE]=96)	# File / directory not readable.
     ERRCD+=([NOTWRITABLE]=93)   # File / directory not writable.
     ERRCD+=([CREATEFAILED]=92)  # Failure to create file / directory.
 declare -r ERRCD            # Once array is constructed, lock it down readonly
+
+
+### function AddNetworkPrefixes
+###
+### Takes the specified file containing one-or-more CIDR IP addresses, and
+### adds the /32 network prefix to all Host IP addresses.
+### 	e.g. 192.168.1.123  will become 192.168.1.123
+###          192.168.1.0/24 will remain 192.168.1.0/24
+###
+### If a destination filename is provided then the results will be written to
+### it, overwriting it if already present.  If no destination is provided, then
+### the original source file will be rewritten to contain the results.
+###
+### Args:	$1 = Existing file containing one-or-more CIDR IP addresses (will
+###				 be overwritten with results if no destination file provided)
+###			$2 = (Optional) destination file to write results to (will be
+###				 overwritten with results if already present).  If not
+###				 provided then the source file will be written-to instead.
+###
+### Ret:    ${ERRCD[OK]}            = Successful.
+###
+### Exits:  ${ERRCD[BADARG]}        = Bad argument
+###         ${ERRCD[MISSING]}       = Input file not present
+###         ${ERRCD[NOTREADABLE]}   = Input file not readable
+###         ${ERRCD[NOTWRITABLE]}   = Output file not writable
+### 			
+AddNetworkPrefixes()
+{
+	local INPUTFILE=${1:-notspecified}
+	local OUTPUTFILE=${2:-${INPUTFILE}}
+
+	### Verify input file is specified, present and readable.
+	### Verify that output file is either present-and-writable, or can be created.
+	### Exit w/error on failure.
+	###
+	if [[ "${INPUTFILE}" == "notspecified" ]]; then
+        ErrExit "Missing argument when calling AddNetworkPrefixes()" ${ERRCD[BADARG]}
+	elif [[ ! -f ${INPUTFILE} ]]; then
+        ErrExit "Missing input file '${INPUTFILE}' when calling AddNetworkPrefixes()" ${ERRCD[MISSING]}
+	elif [[ ! -r ${INPUTFILE} ]]; then
+        ErrExit "Unreadable input file '${INPUTFILE}' when calling AddNetworkPrefixes()" ${ERRCD[NOTREADABLE]}
+	elif [[ ! -f ${OUTPUTFILE} ]]; then
+		touch ${OUTPUTFILE}
+		if [[ $? -ne 0 ]]; then
+        	ErrExit "Couldn't create output file '${OUTPUTFILE}' when calling AddNetworkPrefixes()" ${ERRCD[NOTWRITABLE]}
+		fi
+	elif [[ ! -w ${OUTPUTFILE} ]]; then
+    	ErrExit "Unwritable output file '${OUTPUTFILE}' when calling AddNetworkPrefixes()" ${ERRCD[NOTWRITABLE]}
+	fi
+
+	### Construct sed command and its arguments/parameters
+	###
+	local SEDCMD="sed"
+	if [[ "${OUTPUTFILE}" == "${INPUTFILE}" ]]; then
+		SEDCMD+=" -i''"
+	fi
+	SEDCMD+=" '/\/[0-9][0-9]*/!s/$/\/32/' \${INPUTFILE}" 
+	if [[ "${OUTPUTFILE}" != "${INPUTFILE}" ]]; then
+		SEDCMD+=" >\${OUTPUTFILE}"
+	fi
+
+	### Execute the sed command
+	###
+	eval ${SEDCMD}
+
+    return ${ERRCD[OK]}
+}
+
+
+### function RemoveHostPrefixes
+###
+### Takes the specified file containing one-or-more CIDR IP addresses, and
+### strips the /32 network prefix from all Host addresses. Any non /32 prefixes
+### will remain unchanged.
+### 	e.g. 192.168.1.123/32 will become 192.168.1.123
+###          192.168.1.0/24   will remain 192.168.1.0/24
+###
+### If a destination filename is provided then the results will be written to
+### it, overwriting it if already present.  If no destination is provided, then
+### the original source file will be rewritten to contain the results.
+###
+### Args:	$1 = Existing file containing one-or-more CIDR IP addresses (will
+###				 be overwritten with results if no destination file provided)
+###			$2 = (Optional) destination file to write results to (will be
+###				 overwritten with results if already present).  If not
+###				 provided then the source file will be written-to instead.
+###
+### Ret:    ${ERRCD[OK]}            = Successful.
+###
+### Exits:  ${ERRCD[BADARG]}        = Bad argument
+###         ${ERRCD[MISSING]}       = Input file not present
+###         ${ERRCD[NOTREADABLE]}   = Input file not readable
+###         ${ERRCD[NOTWRITABLE]}   = Output file not writable
+### 			
+RemoveHostPrefixes()
+{
+	local INPUTFILE=${1:-notspecified}
+	local OUTPUTFILE=${2:-${INPUTFILE}}
+
+	### Verify input file is specified, present and readable.
+	### Verify that output file is either present-and-writable, or can be created.
+	### Exit w/error on failure.
+	###
+	if [[ "${INPUTFILE}" == "notspecified" ]]; then
+        ErrExit "Missing argument when calling RemoveHostPrefixes()" ${ERRCD[BADARG]}
+	elif [[ ! -f ${INPUTFILE} ]]; then
+        ErrExit "Missing input file '${INPUTFILE}' when calling RemoveHostPrefixes()" ${ERRCD[MISSING]}
+	elif [[ ! -r ${INPUTFILE} ]]; then
+        ErrExit "Unreadable input file '${INPUTFILE}' when calling RemoveHostPrefixes()" ${ERRCD[NOTREADABLE]}
+	elif [[ ! -f ${OUTPUTFILE} ]]; then
+		touch ${OUTPUTFILE}
+		if [[ $? -ne 0 ]]; then
+        	ErrExit "Couldn't create output file '${OUTPUTFILE}' when calling RemoveHostPrefixes()" ${ERRCD[NOTWRITABLE]}
+		fi
+	elif [[ ! -w ${OUTPUTFILE} ]]; then
+    	ErrExit "Unwritable output file '${OUTPUTFILE}' when calling RemoveHostPrefixes()" ${ERRCD[NOTWRITABLE]}
+	fi
+
+	### Construct sed command and its arguments/parameters
+	###
+	local SEDCMD="sed"
+	if [[ "${OUTPUTFILE}" == "${INPUTFILE}" ]]; then
+		SEDCMD+=" -i''"
+	fi
+	SEDCMD+=" 's/\/32$//' \${INPUTFILE}"
+	if [[ "${OUTPUTFILE}" != "${INPUTFILE}" ]]; then
+		SEDCMD+=" >\${OUTPUTFILE}"
+	fi
+
+	### Execute the sed command
+	###
+	eval ${SEDCMD}
+
+    return ${ERRCD[OK]}
+}
 
 
 ### function GetTmpdir
@@ -135,30 +271,6 @@ GetTmpDir()
 
 	### Return the name of the new tmpdir to the caller via UpVar
 	local "$1" && UpVar $1 "$TMPDIRNAME"
-}
-
-
-### function CleanupBeforeExit
-###
-### Cleans up various artifacts (e.g. temporary-directories) before this
-### script exits.
-###
-### Args:	none
-###
-### Ret:	none
-###
-CleanupBeforeExit()
-{
-	### Remove tmpdir and its contents if detected
-	###
-	if [[ -f "${WORKINGDIR}/.tmpdir_can_be_deleted" ]]
-	then
-		rm -fr ${WORKINGDIR}
-	fi
-
-	### Return to original directory
-	###
-	cd ${ORIGDIR}
 }
 
 
@@ -195,9 +307,13 @@ UpdateBlacklists()
 				then
 					BLACKLIST="${ORIGDIR}/${BLACKLIST}"
 				fi
-				>&2 echo "Adding local list: ${BLACKLIST}"
-				cp ${BLACKLIST} ./
-				>&2 echo "######################################################################## 100.0%"
+				if [[ -r ${BLACKLIST} ]]; then
+					>&2 echo "Adding local blacklist: ${BLACKLIST}"
+					cp ${BLACKLIST} ./
+					>&2 echo "######################################################################## 100.0%"
+				else
+					>&2 echo "local blacklist '${BLACKLIST}' not found or unreadable - skipping"
+				fi
 			fi
 		done
 	)
@@ -220,58 +336,68 @@ CleanupBlacklist()
 	local ORIGLIST=$1
 	local CLEANLIST=$2
 	local WHITELIST=${3:-none}
+	local PREFIXEDWHITELIST="$(basename ${WHITELIST})_prefixed.txt"
 	local STRIPPEDLIST="02_stripped.txt"
 	local DEDUPEDLIST="03_deduplicated.txt"
 	local WHITEADDEDLIST="04_whitelistadded.txt"
 
-	### Count the number of stripped (but not unique or aggregated) ranges
+	### Count the number of ranges in the input file
 	#
-	>&2 echo "Count (non-stripped, non-unique, non-aggregated): $(sed -n '$=' ${ORIGLIST})"
+	>&2 echo "Count (non-stripped, non-unique, non-whitelisted, non-aggregated): $(sed -n '$=' ${ORIGLIST})"
 
-	### Strip out everything except for the IPv4 addresses
-	#
-	sed							\
-		-e '/^#/ d'				\
-		-e '/[:\::]/ d'			\
-		-e 's/ .*// g'			\
-		-e 's/[^0-9,.,/]*// g'	\
-		-e '/^$/ d'				\
-		-e '/\//!s/$/\/32/ g'	\
+	### Strip out all unwanted lines / data from the consolidated blacklist
+	### by performing the following edits (in-order) on each line:
+	###
+	### -e 's/^[ \t]*//'          					= Remove any leading whitespace
+	### -e '/^[<#;]/ d'       						= Delete lines containing only html tags or comments
+	### -e '/[:\::]/ d'           					= Delete lines containing IPv6 IP addresses
+	### -e 's/[ \t<;#].*//'   						= Truncate each line at the 1st whitespace, html-tag or start-of-comment
+	### -e '/^(([0-9]){1,3}\.){3}([0-9]){1,3}/! d'	= Delete lines not starting with a valid IPv4 address
+	###
+	sed	-r											\
+		-e 's/^[ \t]*//'							\
+		-e '/^[<#;]/ d'								\
+		-e '/[:\::]/ d'								\
+		-e 's/[ \t<;#].*//'							\
+		-e '/^(([0-9]){1,3}\.){3}([0-9]){1,3}/! d'	\
 		< ${ORIGLIST} >${STRIPPEDLIST}
 
-	### Count the number of stripped (but not unique or aggregated) ranges
+	### Normalize every line to have a network-prefix whether it is a range or
+	### a host IP. Then display a count of the stripped (but not unique,
+	### whitelisted or aggregated) ranges
 	#
-	>&2 echo "Count (STRIPPED, non-unique, non-aggregated): $(sed -n '$=' ${STRIPPEDLIST})"
+	AddNetworkPrefixes ${STRIPPEDLIST}
+	>&2 echo "Count (STRIPPED, non-unique, non-whitelisted, non-aggregated): $(sed -n '$=' ${STRIPPEDLIST})"
 
-	### Sort, and remove any duplicates
+	### Sort, and remove any duplicates, and then display a count of the
+	### stripped and deduplicated (but not whitelisted or aggregated) ranges
 	#
 	sort -u ${STRIPPEDLIST} >${DEDUPEDLIST}
+	>&2 echo "Count (STRIPPED, UNIQUE, non-whitelisted, non-aggregated): $(sed -n '$=' ${DEDUPEDLIST})"
 
-	### Count the number of stripped, deduplicated (but not aggregated) ranges
-	#
-	>&2 echo "Count (STRIPPED, UNIQUE, non-aggregated): $(sed -n '$=' ${DEDUPEDLIST})"
-
-	### Remove any whitelisted ip's from LocalWhitelist.txt
+	### Remove whitelisted IP's (if any) listed in the supplied whitelist file.
+	### If any were removed, then display a count of the stripped, deduplicated,
+	### whitelisted (but non-aggregated) ranges
+	### 
 	#
 	if [[ -r ${WHITELIST} ]]
 	then
 		>&2 echo "Removing whitelisted IPs/Ranges in ${WHITELIST}"
-		comm -23 ${DEDUPEDLIST} <(sort -u ${WHITELIST}) >${WHITEADDEDLIST}
+		AddNetworkPrefixes ${WHITELIST} ${PREFIXEDWHITELIST}
+		comm -23 ${DEDUPEDLIST} <(sort -u ${PREFIXEDWHITELIST}) >${WHITEADDEDLIST}
+		>&2 echo "Count (STRIPPED, UNIQUE, WHITELISTED, non-aggregated): $(sed -n '$=' ${WHITEADDEDLIST})"
 	else
 		>&2 echo "No whitelist specified/found - skipping"
 		cp ${DEDUPEDLIST} ${WHITEADDEDLIST}
 	fi
 
-	### Count the number of stripped, deduplicated (but not aggregated) ranges including whitelists
-	#
-	>&2 echo "Count (STRIPPED, UNIQUE + WHITELISTED, non-aggregated): $(sed -n '$=' ${WHITEADDEDLIST})"
-
-	### Optimize the list into as few prefixes as possible
+	### Optimize the list into as few prefixes as possible.  Remove any network
+	### prefixes for host IPs (e.g. 192.168.1.123/32 becomes 192.168.1.123).
+	### then display a final count of the stripped, deduplicated, whitelisted
+	### aggregated ranges
 	#
 	aggregate -m 32 -o 32 -q <${WHITEADDEDLIST} >${CLEANLIST}
-
-	### Count the number of stripped, deduplicated (but not aggregated) ranges including whitelists
-	#
+	RemoveHostPrefixes ${CLEANLIST}
 	>&2 echo "Count (FINAL STRIPPED, UNIQUE + WHITELISTED, AGGREGATED): $(sed -n '$=' ${CLEANLIST})"
 }
 
@@ -356,10 +482,33 @@ function PrepareDirWritable()
 }
 
 
+### function CleanupBeforeExit
+###
+### Cleans up various artifacts (e.g. temporary-directories) before this
+### script exits.
+###
+### Args:   none
+###
+### Ret:    none
+###
+CleanupBeforeExit()
+{
+	### Remove tmpdir and its contents if detected
+	###
+#	if [[ -f "${WORKINGDIR}/.tmpdir_can_be_deleted" ]]; then
+#	  rm -fr ${WORKINGDIR}
+#	fi
+
+	### Return to original directory
+	###
+	cd ${ORIGDIR}
+}
+
+
 ### function ErrExit
 ###
-### Emits the specified error message and then terminates the script with the
-### specified error code.
+### Emits the specified error message to STDERR and then terminates the script
+### with the specified error code.
 ###
 ### If no error message is supplied then a general message will be emitted.
 ### If no error-code is supplied than a general error-code is used.
@@ -374,7 +523,7 @@ ErrExit()
     local ERRMSG=${1:-Error occurred}
     local EXITCODE=${2:-1}
 
-    printf "$ERRMSG\n" 1>&2
+    >&2 printf "$ERRMSG\n" 1>&2
     exit $EXITCODE
 }
 
@@ -389,8 +538,7 @@ main()
 	### pathname to it so it can be referenced later in the script after
 	### the current-working-directory has been changed.
 	#
-	if [[ -r ${WHITELISTFILENAME} ]]
-	then
+	if [[ -r ${WHITELISTFILENAME} ]]; then
 		WHITELISTFILE=$(readlink -m ${WHITELISTFILENAME})
 	else
 		WHITELISTFILE=""
@@ -415,11 +563,9 @@ main()
 	cat ${NEWLISTDIR}/* >${CONCATENATED_LIST_NAME}
 
 	### Clean up the new list (e.g. strip out all non-IPv4, dupes, etc.)
+	### and then output it to STDOUT
 	#
 	CleanupBlacklist ${CONCATENATED_LIST_NAME} ${BLACKLIST_FILENAME} ${WHITELISTFILE}
-
-	### Output the finalized blacklist to STDOUT
-	#
 	cat ${BLACKLIST_FILENAME}
 }
 
@@ -428,4 +574,3 @@ main()
 trap CleanupBeforeExit EXIT
 main
 exit 0
-
